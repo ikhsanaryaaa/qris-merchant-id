@@ -4,15 +4,18 @@ Env:
   QMID_PROVIDER      "gopay" (default) or "shopee"
   GOPAY_TOKEN        GoID access_token (required for gopay)
   MERCHANT_ID        GoPay merchant id (gopay)
-  SHOPEE_TOKEN       B:... token (shopee B1, manual — expires eventually)
-  SHOPEE_SESSION     path to session JSON (shopee B2, auto-refresh — no expiry)
+  SHOPEE_TOKEN       B:... token (shopee B1, manual)
+  SHOPEE_SESSION     path to session JSON (shopee B2, auto-refresh)
   STORE_ID           Shopee store id (shopee)
   WEBHOOK_URL        where new payments are POSTed (required)
+  WEBHOOK_SECRET     HMAC-SHA256 key for signing webhook POSTs
   POLL_INTERVAL      seconds, default 6 (gopay) / 10 (shopee)
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -32,6 +35,10 @@ def _log(event: str, **kw: Any) -> None:
     print(json.dumps({"ts": int(time.time()), "event": event, **kw}), flush=True)
 
 
+def _sign(body: str, secret: str) -> str:
+    return hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+
+
 def _load_seen() -> set[str]:
     try:
         return set(json.loads(open(SEEN_PATH).read()))
@@ -47,7 +54,6 @@ def _save_seen(seen: set[str]) -> None:
             f.write(json.dumps(list(seen)[-SEEN_CAP:]))
         os.replace(tmp, SEEN_PATH)
     except OSError:
-        # unwritable volume: degrade gracefully — next restart re-seeds
         pass
 
 
@@ -66,8 +72,6 @@ def _save_session(path: str, session: dict[str, Any]) -> None:
             json.dump(session, f)
         os.replace(tmp, path)
     except OSError:
-        # can't persist refreshed session — next restart still uses the old one
-        # which will fail again; not data-loss, but means no auto-recovery after restart
         pass
 
 
@@ -77,8 +81,8 @@ def main() -> None:
     if not webhook:
         raise SystemExit("WEBHOOK_URL is required")
     interval = float(os.environ.get("POLL_INTERVAL", 6 if provider == "gopay" else 10))
+    webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
 
-    # provider setup
     sp: ShopeePayPartner | None = None
     session_path: str | None = None
     session: dict[str, Any] | None = None
@@ -98,15 +102,13 @@ def main() -> None:
         session_path = os.environ.get("SHOPEE_SESSION", "/data/shopee-session.json")
         session = _load_session(session_path)
         if session:
-            # B2: full session with switch_credential → auto-refresh capable
             sp = ShopeePayPartner()
             sp.set_token(str(session["token"]))
-            if "store_id" in session and session["store_id"]:
+            if session.get("store_id"):
                 store_id = str(session["store_id"])
             watcher = sp.watch(store_id, poll_interval=interval)
             label = f"shopee:{store_id} (B2 auto-refresh)"
         else:
-            # B1: manual token string — will expire, no auto-recovery
             token = os.environ.get("SHOPEE_TOKEN")
             if not token:
                 raise SystemExit("Need SHOPEE_TOKEN (B1) or SHOPEE_SESSION file (B2)")
@@ -120,7 +122,6 @@ def main() -> None:
     _log("start", provider=label, seeded=len(seen), webhook=webhook)
 
     if not seen:
-        # first run: don't flood the webhook with historical txs
         _log("seeding", count=watcher.seed())
 
     with httpx.Client(timeout=10) as hook:
@@ -131,8 +132,21 @@ def main() -> None:
                     if tx_id in seen:
                         continue
                     seen.add(tx_id)
-                    resp = hook.post(webhook, json=tx)
-                    _log("payment", tx_id=tx_id, status=resp.status_code)
+                    amount = tx.get("gross_amount") or tx.get("amount_idr")
+                    if not isinstance(amount, (int, float)):
+                        continue
+                    payload = json.dumps(
+                        {
+                            "amount": int(amount),
+                            "reference": tx_id,
+                            "paidAt": tx.get("transaction_time") or tx.get("create_time"),
+                        }
+                    )
+                    headers = {"content-type": "application/json"}
+                    if webhook_secret:
+                        headers["x-webhook-signature"] = _sign(payload, webhook_secret)
+                    resp = hook.post(webhook, content=payload, headers=headers)
+                    _log("payment", tx_id=tx_id, amount=int(amount), status=resp.status_code)
                 _save_seen(seen)
             except ApiException as exc:
                 if sp is not None and session is not None and _is_dead_token(exc):
