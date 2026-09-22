@@ -1,0 +1,17 @@
+services:
+  watcher:
+    build: .
+    restart: unless-stopped
+    environment:
+      QMID_PROVIDER: ${QMID_PROVIDER:-gopay}
+      GOPAY_TOKEN: ${GOPAY_TOKEN:-}
+      MERCHANT_ID: ${MERCHANT_ID:-}
+      SHOPEE_TOKEN: ${SHOPEE_TOKEN:-}
+      STORE_ID: ${STORE_ID:-}
+      WEBHOOK_URL: ${WEBHOOK_URL:?set in Dokploy Environment tab}
+      POLL_INTERVAL: ${POLL_INTERVAL:-6}
+    volumes:
+      - watcher-data:/data
+
+volumes:
+  watcher-data:

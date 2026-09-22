@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+*.har
+.gopay-session.json
+.shopee-session.json
+data/
+tests/
+research/
+docs/
+examples/
+assets/
+*.md
+pyproject.toml.dockerignore
