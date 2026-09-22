@@ -1,0 +1,28 @@
+# Dokploy compose for the qris-merchant-id worker.
+# No domain, no ports: this is a background poller, not a web service.
+# It must share a Docker network with the reaverlab app so it can reach
+# http://<reaverlab-service>:3000/api/payment-webhook.
+#
+# In Dokploy: deploy this as a Compose application, then attach it to the
+# same network as the reaverlab app (Dokploy UI → Networks, or set
+# WEBHOOK_URL to the reaverlab app's internal hostname).
+
+services:
+  watcher:
+    build: .
+    restart: unless-stopped
+    environment:
+      QMID_PROVIDER: ${QMID_PROVIDER:-gopay}
+      GOPAY_TOKEN: ${GOPAY_TOKEN:-}
+      MERCHANT_ID: ${MERCHANT_ID:-}
+      SHOPEE_TOKEN: ${SHOPEE_TOKEN:-}
+      SHOPEE_SESSION: /data/shopee-session.json
+      STORE_ID: ${STORE_ID:-}
+      WEBHOOK_URL: ${WEBHOOK_URL:?point to reaverlab internal address}
+      WEBHOOK_SECRET: "${PAYMENT_WEBHOOK_SECRET}"
+      POLL_INTERVAL: ${POLL_INTERVAL:-6}
+    volumes:
+      - watcher-data:/data
+
+volumes:
+  watcher-data:
