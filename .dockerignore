@@ -4,11 +4,12 @@
 *.har
 .gopay-session.json
 .shopee-session.json
+device-report.txt
+login_shopee.py
 data/
 tests/
 research/
 docs/
 examples/
 assets/
-*.md
 pyproject.toml.dockerignore
